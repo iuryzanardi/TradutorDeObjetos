@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tradutor Visual Acadêmico</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet"></script>
+</head>
+<body class="bg-gray-900 text-white font-sans flex flex-col justify-between h-screen overflow-hidden">
+
+    <header class="p-4 bg-gray-800 text-center shadow-md">
+        <label for="idioma" class="block text-sm font-medium mb-1">Traduzir para:</label>
+        <select id="idioma" class="bg-gray-700 text-white px-4 py-2 rounded-lg border border-gray-600 focus:outline-none w-full max-w-xs">
+            <option value="pt">Português 🇧🇷</option>
+            <option value="es">Español 🇪🇸</option>
+            <option value="fr">Français 🇫🇷</option>
+            <option value="de">Deutsch 🇩🇪</option>
+            <option value="en">English 🇺🇸</option>
+        </select>
+    </header>
+
+    <main class="relative flex-1 flex items-center justify-center bg-black">
+        <video id="webcam" autoplay playsinline muted class="w-full h-full object-cover"></video>
+        <div id="status" class="absolute inset-0 flex items-center justify-center bg-black/80 text-lg font-semibold px-4 text-center">
+            Carregando IA de Reconhecimento (+1000 objetos)...
+        </div>
+    </main>
+
+    <footer class="p-6 bg-gray-800 rounded-t-2xl text-center shadow-lg flex flex-col items-center justify-center min-h-[160px]">
+        <div class="text-xs text-gray-400 uppercase tracking-wider">Objeto Identificado</div>
+        <div id="resultado" class="text-2xl font-bold my-2 text-green-400">Aponte a câmera...</div>
+        <div id="termo-original" class="text-xs text-gray-500 italic mb-2"></div>
+        
+        <button id="btn-ouvir" class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 text-white px-6 py-2 rounded-full font-medium transition flex items-center gap-2" disabled>
+            🔊 Ouvir Pronúncia
+        </button>
+    </footer>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const statusDiv = document.getElementById('status');
+        const resultadoDiv = document.getElementById('resultado');
+        const termoOriginalDiv = document.getElementById('termo-original');
+        const btnOuvir = document.getElementById('btn-ouvir');
+        const seletorIdioma = document.getElementById('idioma');
+
+        let modelo = null;
+        let ultimoObjetoDetectado = "";
+        let timeoutTraducao = null;
+
+        // 1. Liga a câmera traseira do celular
+        async function iniciarCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment" },
+                    audio: false
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                statusDiv.innerText = "Erro: Permita o acesso à câmera nas configurações.";
+                console.error(err);
+            }
+        }
+
+        // 2. Carrega o modelo MobileNet
+        async function carregarModelo() {
+            try {
+                modelo = await mobilenet.load();
+                statusDiv.style.display = "none";
+                detectarObjeto();
+            } catch (err) {
+                statusDiv.innerText = "Erro ao carregar o modelo de IA.";
+            }
+        }
+
+        // 3. Analisa a imagem da câmera continuamente
+        async function detectarObjeto() {
+            if (!modelo) return;
+
+            // Classifica o frame atual do vídeo
+            const predictions = await modelo.classify(video);
+
+            if (predictions && predictions.length > 0) {
+                // Pega o primeiro palpite (o mais provável)
+                // O MobileNet costuma retornar listas de sinônimos separados por vírgula, pegamos o primeiro termo
+                const objetoIngles = predictions[0].className.split(',')[0].trim();
+                const confianca = (predictions[0].probability * 100).toFixed(0);
+
+                // Só tenta traduzir se mudar o objeto e a confiança for maior que 25%
+                if (objetoIngles !== ultimoObjetoDetectado && predictions[0].probability > 0.25) {
+                    ultimoObjetoDetectado = objetoIngles;
+                    termoOriginalDiv.innerText = `Original: ${objetoIngles} (${confianca}%)`;
+                    
+                    // "Debounce" para não estourar a API de tradução enquanto a pessoa mexe a câmera
+                    clearTimeout(timeoutTraducao);
+                    timeoutTraducao = setTimeout(() => {
+                        traduzirTexto(objetoIngles);
+                    }, 800); // Aguarda o objeto estabilizar por 0.8 segundos para chamar a API
+                }
+            }
+
+            // Mantém o loop ativo
+            requestAnimationFrame(detectarObjeto);
+        }
+
+        // 4. Tradução Gratuita usando a API MyMemory
+        async function traduzirTexto(texto) {
+            const idiomaDestino = seletorIdioma.value;
+            
+            // Se o idioma escolhido for o próprio inglês, pula a API
+            if (idiomaDestino === 'en') {
+                resultadoDiv.innerText = texto;
+                btnOuvir.disabled = false;
+                return;
+            }
+
+            resultadoDiv.innerText = "Traduzindo...";
+
+            try {
+                const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(texto)}&langpair=en|${idiomaDestino}`;
+                const resposta = await fetch(url);
+                const dados = await resposta.json();
+                
+                if (dados.responseData && dados.responseData.translatedText) {
+                    resultadoDiv.innerText = dados.responseData.translatedText;
+                    btnOuvir.disabled = false;
+                } else {
+                    resultadoDiv.innerText = texto;
+                }
+            } catch (error) {
+                console.error("Erro na tradução:", error);
+                resultadoDiv.innerText = texto; // Fallback para o termo em inglês se a rede falhar
+            }
+        }
+
+        // 5. Pronúncia nativa do navegador
+        function falarPronuncia() {
+            const texto = resultadoDiv.innerText;
+            const idioma = seletorIdioma.value;
+
+            if (!texto || texto === "Traduzindo...") return;
+
+            const utterance = new SpeechSynthesisUtterance(texto);
+            
+            // Ajusta o sotaque conforme o idioma selecionado
+            const codigosLocais = { pt: 'pt-BR', en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE' };
+            utterance.lang = codigosLocais[idioma] || idioma;
+
+            window.speechSynthesis.speak(utterance);
+        }
+
+        // Eventos de alteração
+        btnOuvir.addEventListener('click', falarPronuncia);
+        seletorIdioma.addEventListener('change', () => {
+            if (ultimoObjetoDetectado) traduzirTexto(ultimoObjetoDetectado);
+        });
+
+        // Inicializa o app ao abrir a página
+        iniciarCamera().then(carregarModelo);
+    </script>
+</body>
+</html>
